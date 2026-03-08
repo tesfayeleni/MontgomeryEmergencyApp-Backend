@@ -141,6 +141,7 @@ class SignalFusionAgent:
                     exists = self.db.query(RealTimeSignal).filter(
                         RealTimeSignal.id == sig_id,
                         RealTimeSignal.ex
+                    ).first()
 
     def update_signal_multipliers(self):
         zones = self.db.query(Zone).all()
