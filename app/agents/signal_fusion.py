@@ -25,7 +25,6 @@ class SignalFusionAgent:
         ]
         self._round_robin_index = 0
 
-    # ── Street / keyword → zone mapping ──────────────────────────────
     STREET_MAPPINGS = {
         "westside": [
             "rosa parks", "rosa l parks", "west boulevard", "west blvd",
@@ -55,17 +54,17 @@ class SignalFusionAgent:
         ],
     }
 
-    # High-severity keywords that should raise severity regardless of zone
-    HIGH_KEYWORDS    = ["shooting", "shot", "fire", "explosion", "stabbing",
-                        "homicide", "murder", "emergency", "critical", "crash", "dead"]
-    MEDIUM_KEYWORDS  = ["accident", "incident", "alert", "warning", "arrest",
-                        "robbery", "burglary", "assault", "theft", "missing"]
+    HIGH_KEYWORDS   = ["shooting", "shot", "fire", "explosion", "stabbing",
+                       "homicide", "murder", "emergency", "critical", "crash", "dead"]
+    MEDIUM_KEYWORDS = ["accident", "incident", "alert", "warning", "arrest",
+                       "robbery", "burglary", "assault", "theft", "missing"]
 
     def fetch_rss_signals(self) -> List[Dict]:
         signals = []
         for feed_url in self.rss_feeds:
             try:
                 feed = feedparser.parse(feed_url)
+                print(f"RSS feed returned {len(feed.entries)} entries from {feed_url}", flush=True)
                 for entry in feed.entries[:15]:
                     signals.append({
                         "title":       entry.get("title", ""),
@@ -74,15 +73,10 @@ class SignalFusionAgent:
                         "timestamp":   datetime.utcnow(),
                     })
             except Exception as e:
-                print(f"RSS fetch error {feed_url}: {e}")
+                print(f"RSS fetch error {feed_url}: {e}", flush=True)
         return signals
 
     def extract_zone_mentions(self, text: str, signal_index: int, total_zones: int) -> List[str]:
-        """
-        Returns matched zone names from text.
-        If no match found, distributes to a zone via round-robin instead of
-        always defaulting to Downtown.
-        """
         lower = text.lower()
         matched = []
 
@@ -96,7 +90,6 @@ class SignalFusionAgent:
         if matched:
             return matched
 
-        # Round-robin fallback — distribute evenly across zones
         zone_names = list(self.STREET_MAPPINGS.keys())
         fallback = zone_names[signal_index % total_zones]
         return [fallback]
@@ -113,35 +106,57 @@ class SignalFusionAgent:
         severity_map = {"low": 0.3, "medium": 0.6, "high": 1.0}
         recency_decay = max(0.1, 1.0 - (recency_hours / 48.0))
         return severity_map.get(severity, 0.3) * recency_decay
-    
+
     def run(self):
-        self.db.expire_all()  # force fresh zone data, clears 2.4hr stale cache
-    
+        self.db.expire_all()  # force fresh zone data, clears stale cache
+
         try:
             signals = self.fetch_rss_signals()
             zones = self.db.query(Zone).all()
             zone_map = {z.name.lower(): z for z in zones}
             n_zones = len(zones)
-    
+
             print(f"SignalFusionAgent: {len(signals)} signals fetched, {n_zones} zones loaded", flush=True)
-    
+
             for idx, signal in enumerate(signals):
                 full_text = signal["title"] + " " + signal["description"]
                 severity = self.classify_severity(full_text)
                 zone_names = self.extract_zone_mentions(full_text, idx, n_zones)
-    
+
                 for zone_name in zone_names:
                     zone = zone_map.get(zone_name.lower())
                     if not zone:
                         continue
-    
+
                     title_hash = hashlib.md5(signal["title"].encode()).hexdigest()[:8]
                     sig_id = f"sig_{zone.id}_{title_hash}"
-    
+
                     exists = self.db.query(RealTimeSignal).filter(
                         RealTimeSignal.id == sig_id,
-                        RealTimeSignal.ex
+                        RealTimeSignal.expires_at > datetime.utcnow()
                     ).first()
+                    if exists:
+                        continue
+
+                    self.db.add(RealTimeSignal(
+                        id=sig_id,
+                        zone_id=zone.id,
+                        signal_type=SignalType.NEWS,
+                        severity=severity,
+                        title=signal["title"][:200],
+                        description=signal["description"][:500],
+                        source_link=signal["link"],
+                        weight=self.calculate_signal_weight(severity),
+                        expires_at=datetime.utcnow() + timedelta(hours=24),
+                    ))
+
+            self.db.commit()
+            self.update_signal_multipliers()
+
+        except Exception as e:
+            self.db.rollback()
+            print(f"SignalFusionAgent.run() FAILED: {e}", flush=True)
+            raise
 
     def update_signal_multipliers(self):
         zones = self.db.query(Zone).all()
@@ -153,9 +168,9 @@ class SignalFusionAgent:
             ).all()
 
             if active_signals:
-                weights     = [s.weight for s in active_signals]
-                multiplier  = 1.0 + sum(weights) * 0.2
-                multiplier  = min(3.0, multiplier)
+                weights = [s.weight for s in active_signals]
+                multiplier = 1.0 + sum(weights) * 0.2
+                multiplier = min(3.0, multiplier)
             else:
                 multiplier = 1.0
 
