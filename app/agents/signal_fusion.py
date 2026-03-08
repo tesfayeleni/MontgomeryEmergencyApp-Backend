@@ -113,47 +113,34 @@ class SignalFusionAgent:
         severity_map = {"low": 0.3, "medium": 0.6, "high": 1.0}
         recency_decay = max(0.1, 1.0 - (recency_hours / 48.0))
         return severity_map.get(severity, 0.3) * recency_decay
-
+    
     def run(self):
-        signals    = self.fetch_rss_signals()
-        zones      = self.db.query(Zone).all()
-        zone_map   = {z.name.lower(): z for z in zones}
-        n_zones    = len(zones)
-
-        for idx, signal in enumerate(signals):
-            full_text  = signal["title"] + " " + signal["description"]
-            severity   = self.classify_severity(full_text)
-            zone_names = self.extract_zone_mentions(full_text, idx, n_zones)
-
-            for zone_name in zone_names:
-                zone = zone_map.get(zone_name.lower())
-                if not zone:
-                    continue
-
-                # Deduplicate by title hash so re-runs don't double-insert
-                title_hash = hashlib.md5(signal["title"].encode()).hexdigest()[:8]
-                sig_id = f"sig_{zone.id}_{title_hash}"
-
-                exists = self.db.query(RealTimeSignal).filter(
-                    RealTimeSignal.id == sig_id
-                ).first()
-                if exists:
-                    continue
-
-                self.db.add(RealTimeSignal(
-                    id=sig_id,
-                    zone_id=zone.id,
-                    signal_type=SignalType.NEWS,
-                    severity=severity,
-                    title=signal["title"][:200],
-                    description=signal["description"][:500],
-                    source_link=signal["link"],
-                    weight=self.calculate_signal_weight(severity),
-                    expires_at=datetime.utcnow() + timedelta(hours=24),
-                ))
-
-        self.db.commit()
-        self.update_signal_multipliers()
+        self.db.expire_all()  # force fresh zone data, clears 2.4hr stale cache
+    
+        try:
+            signals = self.fetch_rss_signals()
+            zones = self.db.query(Zone).all()
+            zone_map = {z.name.lower(): z for z in zones}
+            n_zones = len(zones)
+    
+            print(f"SignalFusionAgent: {len(signals)} signals fetched, {n_zones} zones loaded", flush=True)
+    
+            for idx, signal in enumerate(signals):
+                full_text = signal["title"] + " " + signal["description"]
+                severity = self.classify_severity(full_text)
+                zone_names = self.extract_zone_mentions(full_text, idx, n_zones)
+    
+                for zone_name in zone_names:
+                    zone = zone_map.get(zone_name.lower())
+                    if not zone:
+                        continue
+    
+                    title_hash = hashlib.md5(signal["title"].encode()).hexdigest()[:8]
+                    sig_id = f"sig_{zone.id}_{title_hash}"
+    
+                    exists = self.db.query(RealTimeSignal).filter(
+                        RealTimeSignal.id == sig_id,
+                        RealTimeSignal.ex
 
     def update_signal_multipliers(self):
         zones = self.db.query(Zone).all()
