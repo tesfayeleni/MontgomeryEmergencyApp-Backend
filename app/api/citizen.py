@@ -20,7 +20,7 @@ class CitizenReportRequest(BaseModel):
     longitude: float
     severity: str = "low"  # low, medium, high
     description: str
-    photo_url: str = None
+    photo_url: str | None = None
 
 
 class EventSubmissionRequest(BaseModel):
