@@ -121,7 +121,7 @@ async def get_public_feed(db: Session = Depends(get_db)):
     # Get public signals (only high severity)
     public_signals = db.query(RealTimeSignal).filter(
         RealTimeSignal.severity == "high",
-        //RealTimeSignal.expires_at > dt.utcnow(),
+        # RealTimeSignal.expires_at > dt.utcnow(),
     ).all()
     
     # Get recent citizen reports
