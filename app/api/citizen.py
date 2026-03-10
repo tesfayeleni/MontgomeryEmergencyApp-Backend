@@ -126,7 +126,7 @@ async def get_public_feed(db: Session = Depends(get_db)):
     
     # Get recent citizen reports
     recent_reports = db.query(CitizenReport).filter(
-        CitizenReport.verified == True,
+        CitizenReport.verified == "verified",
     ).order_by(CitizenReport.created_at.desc()).limit(10).all()
     
     return {
