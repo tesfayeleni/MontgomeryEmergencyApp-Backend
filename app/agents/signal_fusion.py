@@ -2,6 +2,7 @@ import feedparser
 from datetime import datetime, timedelta
 from typing import List, Dict
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert
 from app.models.signal import RealTimeSignal, SignalType
 from app.models.zone import Zone
 from app.models.risk import RiskScore
@@ -131,14 +132,9 @@ class SignalFusionAgent:
                     title_hash = hashlib.md5(signal["title"].encode()).hexdigest()[:8]
                     sig_id = f"sig_{zone.id}_{title_hash}"
 
-                    exists = self.db.query(RealTimeSignal).filter(
-                        RealTimeSignal.id == sig_id,
-                        RealTimeSignal.expires_at > datetime.utcnow()
-                    ).first()
-                    if exists:
-                        continue
-
-                    self.db.add(RealTimeSignal(
+                    # Upsert — if ID already exists (from concurrent request or
+                    # previous run), skip silently instead of crashing
+                    stmt = insert(RealTimeSignal).values(
                         id=sig_id,
                         zone_id=zone.id,
                         signal_type=SignalType.NEWS,
@@ -148,7 +144,9 @@ class SignalFusionAgent:
                         source_link=signal["link"],
                         weight=self.calculate_signal_weight(severity),
                         expires_at=datetime.utcnow() + timedelta(hours=24),
-                    ))
+                    ).on_conflict_do_nothing(index_elements=["id"])
+
+                    self.db.execute(stmt)
 
             self.db.commit()
             self.update_signal_multipliers()
